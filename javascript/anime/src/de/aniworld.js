@@ -392,12 +392,14 @@ async function doodExtractor(url) {
 }
 
 async function vidmolyExtractor(url) {
-    const res = await new Client({ 'useDartHttpClient': true, "followRedirects": true }).get(url);
-    const playlistUrl = res.body.match(/https:\/\/\S*\.m3u8/)[0];
-    return await m3u8Extractor(playlistUrl, {
-        'Referer': 'https://vidmoly.to',
-        'Origin': 'https://vidmoly.to'
-    });
+    const headers = {
+        'Referer': 'https://vidmoly.biz/',
+        'Origin': 'https://vidmoly.biz'
+    };
+    const res = await new Client({ 'useDartHttpClient': true, "followRedirects": true }).get(url, headers);
+    const playlistUrl = res.body.match(/https:\/\/\S*\.m3u8/)?.[0];
+    if (!playlistUrl) return [];
+    return await m3u8Extractor(playlistUrl, headers);
 }
 
 async function vidozaExtractor(url) {
@@ -428,21 +430,40 @@ async function vidHideExtractor(url) {
 
 async function filemoonExtractor(url, headers) {
     headers = headers ?? {};
+    const fileCode = url.match(/\/e\/([^\/\?]+)/)?.[1];
+    const origin = url.match(/https?:\/\/[^\/]+/)[0];
+
+    if (fileCode && globalThis.crypto?.subtle) {
+        try {
+            const apiRes = await new Client().get(`${origin}/api/videos/${fileCode}`, { 'Referer': url });
+            const data = JSON.parse(apiRes.body);
+            const keyBytes = Uint8Array.fromBase64(data.key_parts.join('').replace(/-/g, '+').replace(/_/g, '/'));
+            const ivBytes = Uint8Array.fromBase64(data.iv.replace(/-/g, '+').replace(/_/g, '/'));
+            const payloadBytes = Uint8Array.fromBase64(data.payload.replace(/-/g, '+').replace(/_/g, '/'));
+
+            const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+            const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivBytes }, key, payloadBytes);
+            const json = JSON.parse(new TextDecoder().decode(decrypted));
+
+            const best = json.sources?.sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0];
+            if (best?.file) {
+                return best.file.includes('.m3u8')
+                    ? await m3u8Extractor(best.file, { 'Referer': origin })
+                    : [{ url: best.file, originalUrl: best.file, quality: (best.height ?? '') + 'p', headers: { 'Referer': origin } }];
+            }
+        } catch (e) {}
+    }
+
+    // Legacy-Fallback
     headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
     delete headers['user-agent'];
-
     let res = await new Client().get(url, headers);
-    const src = res.body.match(/iframe src="(.*?)"/)?.[1];
+    const src = res.body.match(/iframe src=["'](.*?)["']/)?.[1];
     if (src) {
-        res = await new Client().get(src, {
-            'Referer': url,
-            'Accept-Language': 'de,en-US;q=0.7,en;q=0.3',
-            'User-Agent': headers['User-Agent']
-        });
+        res = await new Client().get(src, { 'Referer': url, 'Accept-Language': 'de,en-US;q=0.7,en;q=0.3', 'User-Agent': headers['User-Agent'] });
     }
     return await jwplayerExtractor(res.body, headers);
 }
-
 async function mixdropExtractor(url) {
     headers = { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' };
     let res = await new Client({ 'useDartHttpClient': true, "followRedirects": false }).get(url, headers);
